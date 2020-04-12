@@ -4,20 +4,19 @@
 //!
 use std::io;
 
-
-pub struct Interface{
-    pub nic: tun_tap::Iface
+pub struct Interface {
+    pub nic: tun_tap::Iface,
 }
 
-pub struct recv_result{
-    data: [u8;1504],
-    nbytes: usize
+pub struct recv_result {
+    data: [u8; 1504],
+    nbytes: usize,
 }
 
 impl Interface {
     pub fn new() -> io::Result<Self> {
         let nic = tun_tap::Iface::without_packet_info("tun0", tun_tap::Mode::Tun)?;
-        return Ok(Interface{nic})
+        return Ok(Interface { nic });
     }
 
     /// Recieve one packet
@@ -43,8 +42,7 @@ impl Interface {
     //     Ok(a)
     // }
 
-    pub fn send(&mut self) -> io::Result<()>{
+    pub fn send(&mut self) -> io::Result<()> {
         unimplemented!()
     }
-
 }

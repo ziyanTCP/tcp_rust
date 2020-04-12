@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 export RUST_LOG=info
+cargo fmt
 cargo b
 # debug version or --release
 ext=$?
@@ -9,8 +10,8 @@ if [[ $ext -ne 0 ]]; then
 fi
 
 sudo setcap cap_net_admin=eip target/debug/tcp_proto
-#RUST_LOG=debug target/debug/tcp_proto &
-target/debug/tcp_proto &
+RUST_LOG=debug target/debug/tcp_proto &
+#target/debug/tcp_proto &
 pid=$!
 
 sudo ip addr add 192.168.0.1/24 dev tun0
