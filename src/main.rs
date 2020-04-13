@@ -8,6 +8,7 @@ fn main() -> io::Result<()> {
     let mut nic = tun_tap::Iface::without_packet_info("tun0", tun_tap::Mode::Tun)?;
     let mut tcp_instance: tcp = Default::default();
     tcp_instance.control(control_message::Bind(4000 as u16));
+    tcp_instance.control(control_message::Bind(5000 as u16));
     while true {
         let mut buf = [0u8; 1504];
         let mut nbytes = nic.recv(&mut buf[..])?;

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-export RUST_LOG=info
 cargo fmt
 cargo b
 # debug version or --release

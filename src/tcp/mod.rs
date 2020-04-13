@@ -45,29 +45,18 @@ impl tcp {
                         match self.flow_table.entry(q) {
                             Entry::Occupied(mut f) => {
                                 // debug!("got packet for known quad {:?}", q);
-
                                 match f.get_mut().state {
                                     State::SynRcvd => {
-                                        f.get_mut().SynRcvd_handler(
-                                            nic,
-                                            iph,
-                                            tcph,
-                                            &buf[idata..nbytes],
-                                        );
+                                        f.get_mut().SynRcvd_handler(nic, tcph, &buf[idata..nbytes]);
                                     }
                                     State::Estab => {
-                                        f.get_mut().Estab_handler(
-                                            nic,
-                                            iph,
-                                            tcph,
-                                            &buf[idata..nbytes],
-                                        );
+                                        f.get_mut().Estab_handler(nic, tcph, &buf[idata..nbytes]);
                                     }
                                     State::CloseWait => {
                                         f.get_mut().Closed_handler();
                                     }
                                     State::LastAck => {
-                                        f.get_mut().LastAck_handler();
+                                        f.get_mut().LastAck_handler(nic, tcph);
                                     }
                                     State::TimeWait => {
                                         f.get_mut().TimeWait_handler();
@@ -83,12 +72,6 @@ impl tcp {
                                         f.get_mut().Closed_handler();
                                     }
                                 }
-                                // let a = f.get_mut().on_packet(
-                                //      nic,
-                                //     iph,
-                                //     tcph,
-                                //     &buf[idata..nbytes],
-                                // ).unwrap();
                             }
                             Entry::Vacant(e) => {
                                 // debug!("got packet for unknown quad {:?}", q);
@@ -112,7 +95,7 @@ impl tcp {
                 }
             }
             Err(e) => {
-                //debug!("ignoring weird tcp packet {:?}", e);
+                debug!("ignoring weird tcp packet {:?}", e);
             }
         }
     }
