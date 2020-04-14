@@ -4,13 +4,15 @@ use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 
 use crate::nic;
+use crate::nic::Interface;
 use std::collections::hash_map::Entry;
 use std::collections::HashSet;
+use std::io;
 
-#[derive(Default)]
 pub struct tcp {
     flow_table: HashMap<flow::Quad, flow::flow>, // the mapping from the Quad to the flow
     listening: HashSet<u16>,                     // the mapping from the port
+    pub nic: nic::Interface,
 }
 
 pub enum control_message {
@@ -21,7 +23,15 @@ pub enum control_message {
 }
 
 impl tcp {
-    pub fn action(&mut self, buf: &[u8], nbytes: usize, nic: &mut nic::Interface) {
+    pub fn new(ip: Ipv4Addr) -> io::Result<Option<Self>> {
+        let mut tcp_instance = tcp {
+            flow_table: Default::default(),
+            listening: Default::default(),
+            nic: Interface::new(ip)?,
+        };
+        Ok(Some(tcp_instance))
+    }
+    pub fn action(&mut self, buf: &[u8], nbytes: usize) {
         // is it a good choice to leave nic here?
         match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
             Ok(iph) => {
@@ -45,16 +55,24 @@ impl tcp {
                                 // debug!("got packet for known quad {:?}", q);
                                 match f.get_mut().state {
                                     flow::State::SynRcvd => {
-                                        f.get_mut().SynRcvd_handler(nic, tcph, &buf[idata..nbytes]);
+                                        f.get_mut().SynRcvd_handler(
+                                            &mut self.nic,
+                                            tcph,
+                                            &buf[idata..nbytes],
+                                        );
                                     }
                                     flow::State::Estab => {
-                                        f.get_mut().Estab_handler(nic, tcph, &buf[idata..nbytes]);
+                                        f.get_mut().Estab_handler(
+                                            &mut self.nic,
+                                            tcph,
+                                            &buf[idata..nbytes],
+                                        );
                                     }
                                     flow::State::CloseWait => {
                                         f.get_mut().Closed_handler();
                                     }
                                     flow::State::LastAck => {
-                                        f.get_mut().LastAck_handler(nic, tcph);
+                                        f.get_mut().LastAck_handler(&mut self.nic, tcph);
                                     }
                                     flow::State::TimeWait => {
                                         f.get_mut().TimeWait_handler();
@@ -74,9 +92,12 @@ impl tcp {
                             Entry::Vacant(e) => {
                                 // debug!("got packet for unknown quad {:?}", q);
                                 if self.listening.contains(&q.dst.1) {
-                                    if let Some(new_f) =
-                                        flow::flow::passive_three_way_handshake(nic, iph, tcph)
-                                            .unwrap()
+                                    if let Some(new_f) = flow::flow::passive_three_way_handshake(
+                                        &mut self.nic,
+                                        iph,
+                                        tcph,
+                                    )
+                                    .unwrap()
                                     {
                                         e.insert(new_f);
                                         return;
@@ -105,19 +126,23 @@ impl tcp {
                 debug!("bind port number {}", port)
             }
             control_message::Connect(src_port, dst_ip, dst_port) => {
-                // let q = flow::Quad {
-                //     src: (src, tcph.source_port()),
-                //     dst: (dst_ip, dst_ip),
-                // };
-                // // create a flow
-                // if let Some(new_f) = flow::flow::passive_three_way_handshake(nic, iph, tcph).unwrap()
-                // {
-                //     e.insert(new_f);
-                //     return;
-                // } else {};
+                //     let q = flow::Quad {
+                //         src: (src, src_port),
+                //         dst: (dst_ip, dst_port),
+                //     };
+                //     // create a flow
+                //     if let Some(new_f) =
+                //         flow::flow::passive_three_way_handshake(nic, iph, tcph).unwrap()
+                //     {
+                //         e.insert(new_f);
+                //         return;
+                //     } else {
+                //     };
+                // }
+                // control_message::Read => unimplemented!(),
+                // control_message::Write => unimplemented!(),
             }
-            control_message::Read => unimplemented!(),
-            control_message::Write => unimplemented!(),
+            _ => {}
         }
     }
 }
