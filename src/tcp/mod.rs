@@ -1,29 +1,27 @@
 pub mod flow;
-use flow::Quad;
-use flow::State;
 
-mod flow_table;
-use flow_table::f_t;
 use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 
+use crate::nic;
 use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 
 #[derive(Default)]
 pub struct tcp {
-    flow_table: HashMap<Quad, flow::flow>, // the mapping from the Quad to the flow
-    listening: HashSet<u16>,               // the mapping from the port
+    flow_table: HashMap<flow::Quad, flow::flow>, // the mapping from the Quad to the flow
+    listening: HashSet<u16>,                     // the mapping from the port
 }
 
 pub enum control_message {
     Bind(u16),
+    Connect(u16, Ipv4Addr, u16),
     Read,
     Write,
 }
 
 impl tcp {
-    pub fn action(&mut self, buf: &[u8], nbytes: usize, nic: &mut tun_tap::Iface) {
+    pub fn action(&mut self, buf: &[u8], nbytes: usize, nic: &mut nic::Interface) {
         // is it a good choice to leave nic here?
         match etherparse::Ipv4HeaderSlice::from_slice(&buf[..nbytes]) {
             Ok(iph) => {
@@ -37,7 +35,7 @@ impl tcp {
                 }
                 match etherparse::TcpHeaderSlice::from_slice(&buf[iph.slice().len()..nbytes]) {
                     Ok(tcph) => {
-                        let q = Quad {
+                        let q = flow::Quad {
                             src: (src, tcph.source_port()),
                             dst: (dst, tcph.destination_port()),
                         };
@@ -46,29 +44,29 @@ impl tcp {
                             Entry::Occupied(mut f) => {
                                 // debug!("got packet for known quad {:?}", q);
                                 match f.get_mut().state {
-                                    State::SynRcvd => {
+                                    flow::State::SynRcvd => {
                                         f.get_mut().SynRcvd_handler(nic, tcph, &buf[idata..nbytes]);
                                     }
-                                    State::Estab => {
+                                    flow::State::Estab => {
                                         f.get_mut().Estab_handler(nic, tcph, &buf[idata..nbytes]);
                                     }
-                                    State::CloseWait => {
+                                    flow::State::CloseWait => {
                                         f.get_mut().Closed_handler();
                                     }
-                                    State::LastAck => {
+                                    flow::State::LastAck => {
                                         f.get_mut().LastAck_handler(nic, tcph);
                                     }
-                                    State::TimeWait => {
+                                    flow::State::TimeWait => {
                                         f.get_mut().TimeWait_handler();
                                     }
 
-                                    State::FinWait1 => {
+                                    flow::State::FinWait1 => {
                                         f.get_mut().FinWait1_handler();
                                     }
-                                    State::FinWait2 => {
+                                    flow::State::FinWait2 => {
                                         f.get_mut().FinWait2_handler();
                                     }
-                                    State::Closed => {
+                                    flow::State::Closed => {
                                         f.get_mut().Closed_handler();
                                     }
                                 }
@@ -77,7 +75,8 @@ impl tcp {
                                 // debug!("got packet for unknown quad {:?}", q);
                                 if self.listening.contains(&q.dst.1) {
                                     if let Some(new_f) =
-                                        flow::flow::three_way_handshake(nic, iph, tcph).unwrap()
+                                        flow::flow::passive_three_way_handshake(nic, iph, tcph)
+                                            .unwrap()
                                     {
                                         e.insert(new_f);
                                         return;
@@ -104,6 +103,18 @@ impl tcp {
             control_message::Bind(port) => {
                 self.listening.insert(port);
                 debug!("bind port number {}", port)
+            }
+            control_message::Connect(src_port, dst_ip, dst_port) => {
+                // let q = flow::Quad {
+                //     src: (src, tcph.source_port()),
+                //     dst: (dst_ip, dst_ip),
+                // };
+                // // create a flow
+                // if let Some(new_f) = flow::flow::passive_three_way_handshake(nic, iph, tcph).unwrap()
+                // {
+                //     e.insert(new_f);
+                //     return;
+                // } else {};
             }
             control_message::Read => unimplemented!(),
             control_message::Write => unimplemented!(),

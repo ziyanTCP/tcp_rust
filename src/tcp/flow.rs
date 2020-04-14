@@ -8,7 +8,10 @@ use std::fs::File;
 use std::io::Write;
 
 // for statistics
+use crate::nic;
 use std::time::{Duration, Instant};
+
+/// A Quad is a 4 tuple
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Quad {
     pub src: (Ipv4Addr, u16),
@@ -101,8 +104,76 @@ pub struct flow {
 }
 
 impl flow {
-    pub fn three_way_handshake<'a>(
-        nic: &mut tun_tap::Iface, // why mutable?
+    pub fn passive_three_way_handshake<'a>(
+        nic: &mut nic::Interface, // why mutable?
+        iph: etherparse::Ipv4HeaderSlice<'a>,
+        tcph: etherparse::TcpHeaderSlice<'a>,
+    ) -> io::Result<Option<Self>> {
+        let buf = [0u8; 1500];
+        if !tcph.syn() {
+            // only expected SYN packet
+            return Ok(None);
+        }
+
+        let iss = 0;
+        let wnd = 64240; // same as the window size of cat
+
+        let mut f = flow {
+            quad: Quad {
+                src: (iph.source_addr(), tcph.source_port()),
+                dst: (iph.destination_addr(), tcph.destination_port()),
+            },
+
+            state: State::SynRcvd,
+            send: SendSequenceSpace {
+                una: iss,
+                nxt: iss,
+                wnd: wnd,
+                up: false,
+                wl1: 0,
+                wl2: 0,
+                iss: iss,
+            },
+            recv: RecvSequenceSpace {
+                irs: tcph.sequence_number(),
+                nxt: tcph.sequence_number() + 1,
+                wnd: tcph.window_size(),
+                up: false,
+            },
+            incoming: Default::default(),
+            unacked: Default::default(),
+            tcp: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
+            ip: etherparse::Ipv4Header::new(
+                0,
+                64,
+                etherparse::IpTrafficClass::Tcp,
+                [
+                    iph.destination()[0],
+                    iph.destination()[1],
+                    iph.destination()[2],
+                    iph.destination()[3],
+                ],
+                [
+                    iph.source()[0],
+                    iph.source()[1],
+                    iph.source()[2],
+                    iph.source()[3],
+                ],
+            ),
+            stats: Statistics {
+                timer: Instant::now(),
+                size: 0,
+            },
+        };
+        // need to start establishing a connection
+        f.tcp.syn = true;
+        f.tcp.ack = true;
+        f.write(nic, f.send.nxt, 0)?;
+        Ok(Some(f))
+    }
+
+    pub fn active_three_way_handshake<'a>(
+        nic: &mut nic::Interface, // why mutable?
         iph: etherparse::Ipv4HeaderSlice<'a>,
         tcph: etherparse::TcpHeaderSlice<'a>,
     ) -> io::Result<Option<Self>> {
@@ -171,7 +242,7 @@ impl flow {
 
     pub fn write(
         &mut self,
-        nic: &mut tun_tap::Iface,
+        nic: &mut nic::Interface,
         seq: u32,
         mut limit: usize,
     ) -> io::Result<usize> {
@@ -205,11 +276,8 @@ impl flow {
             .tcp
             .calc_checksum_ipv4(&self.ip, &[])
             .expect("failed to compute checksum");
-
         let mut tcp_header_buf = &mut buf[ip_header_ends_at..tcp_header_ends_at];
-
         self.tcp.write(&mut tcp_header_buf);
-
         if self.tcp.syn {
             self.send.nxt = self.send.nxt.wrapping_add(1);
             self.tcp.syn = false;
@@ -218,10 +286,8 @@ impl flow {
             self.send.nxt = self.send.nxt.wrapping_add(1);
             self.tcp.fin = false;
         }
-
         //debug!("{:?}",&buf[..tcp_header_ends_at]);
         nic.send(&buf[..tcp_header_ends_at])?;
-
         Ok(0 as usize)
     }
 
@@ -307,7 +373,7 @@ impl flow {
 
     pub fn SynRcvd_handler(
         &mut self,
-        nic: &mut tun_tap::Iface,
+        nic: &mut nic::Interface,
         tcph: etherparse::TcpHeaderSlice,
         data: &[u8],
     ) -> io::Result<u64> {
@@ -348,7 +414,7 @@ impl flow {
 
     pub fn Estab_handler(
         &mut self,
-        nic: &mut tun_tap::Iface,
+        nic: &mut nic::Interface,
         tcph: etherparse::TcpHeaderSlice,
         data: &[u8],
     ) -> io::Result<u64> {
@@ -405,7 +471,7 @@ impl flow {
 
     pub fn LastAck_handler(
         &mut self,
-        nic: &mut tun_tap::Iface,
+        nic: &mut nic::Interface,
         tcph: etherparse::TcpHeaderSlice,
     ) -> io::Result<u64> {
         // debug!("LastAck called");
