@@ -445,7 +445,8 @@ impl flow {
 
     pub fn debug_print_buffer(&mut self) {
         // print_data_in_the_buffer
-        let temp_directory = env::current_dir();
+        let temp_directory = env::current_dir().unwrap();
+        //println!("The current directory is {}", temp_directory.display());
         let temp_file = temp_directory.join("test_recieved.mp4");
         let mut file = File::create(temp_file).unwrap();
         file.write(Vec::from(self.incoming.clone()).as_ref())
