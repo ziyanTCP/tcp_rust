@@ -2,10 +2,13 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::Ipv4Addr;
 
+// for file operations
 use std::env;
 use std::fs::File;
 use std::io::Write;
 
+// for statistics
+use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Quad {
     pub src: (Ipv4Addr, u16),
@@ -78,6 +81,10 @@ pub struct RecvSequenceSpace {
     irs: u32,
 }
 
+pub struct Statistics {
+    pub timer: Instant,
+    pub size: u64,
+}
 
 pub struct flow {
     pub quad: Quad,
@@ -88,7 +95,7 @@ pub struct flow {
     ip: etherparse::Ipv4Header,
     tcp: etherparse::TcpHeader,
 
-    // pub stats: Statistics,
+    pub stats: Statistics,
     pub(crate) incoming: VecDeque<u8>,
     pub(crate) unacked: VecDeque<u8>,
 }
@@ -150,6 +157,10 @@ impl flow {
                     iph.source()[3],
                 ],
             ),
+            stats: Statistics {
+                timer: Instant::now(),
+                size: 0,
+            },
         };
         // need to start establishing a connection
         f.tcp.syn = true;
@@ -232,6 +243,7 @@ impl flow {
             unread_data_at = 0;
         }
         self.incoming.extend(&data[unread_data_at..]);
+        self.stats.size += data[unread_data_at..].len() as u64;
         //self.debug_print_buffer();
         self.recv.nxt = seqn
             .wrapping_add(data.len() as u32)
@@ -396,7 +408,7 @@ impl flow {
         nic: &mut tun_tap::Iface,
         tcph: etherparse::TcpHeaderSlice,
     ) -> io::Result<u64> {
-        debug!("LastAck called");
+        // debug!("LastAck called");
         let seqn = tcph.sequence_number();
         let ackn = tcph.acknowledgment_number();
 
@@ -415,6 +427,7 @@ impl flow {
             // must have ACKed our SYN, since we detected at least one acked byte,
             // and we have only sent one byte (the SYN).
             debug!("connection terminated!");
+            self.debug_print_statistics();
             self.debug_print_buffer();
             self.state = State::Closed;
         } else {
@@ -427,18 +440,31 @@ impl flow {
     }
 
     pub fn Closed_handler(&mut self) {
-        debug!("LastAck called");
+        debug!("Closed_handler called");
     }
-
 
     pub fn debug_print_buffer(&mut self) {
         // print_data_in_the_buffer
-        let temp_directory = env::temp_dir();
-        let temp_file = temp_directory.join("test.mp4");
+        let temp_directory = env::current_dir();
+        let temp_file = temp_directory.join("test_recieved.mp4");
         let mut file = File::create(temp_file).unwrap();
         file.write(Vec::from(self.incoming.clone()).as_ref())
             .unwrap();
         //info!("data in the buffer (self.incoming) {:?}", test);
+    }
+
+    pub fn debug_print_statistics(&mut self) {
+        info!("Time elapsed is {:?}", self.stats.timer.elapsed());
+        info!(
+            "the size of data transmitted is {:?} bits, {:?} kb, {:?} mb",
+            self.stats.size,
+            self.stats.size / 1024,
+            self.stats.size / 1024 / 1024
+        );
+        info!(
+            "the throughput is {:?} mbps",
+            (self.stats.size) / 1024 / 1024 / (self.stats.timer.elapsed().as_secs())
+        );
     }
 }
 
