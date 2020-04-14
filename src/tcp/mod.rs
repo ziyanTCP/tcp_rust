@@ -95,7 +95,7 @@ impl tcp {
                 }
             }
             Err(e) => {
-                debug!("ignoring weird tcp packet {:?}", e);
+                //debug!("ignoring weird tcp packet {:?}", e);
             }
         }
     }

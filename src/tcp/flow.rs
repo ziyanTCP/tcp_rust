@@ -2,6 +2,10 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::Ipv4Addr;
 
+use std::env;
+use std::fs::File;
+use std::io::Write;
+
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct Quad {
     pub src: (Ipv4Addr, u16),
@@ -74,6 +78,7 @@ pub struct RecvSequenceSpace {
     irs: u32,
 }
 
+
 pub struct flow {
     pub quad: Quad,
     pub state: State,
@@ -83,6 +88,7 @@ pub struct flow {
     ip: etherparse::Ipv4Header,
     tcp: etherparse::TcpHeader,
 
+    // pub stats: Statistics,
     pub(crate) incoming: VecDeque<u8>,
     pub(crate) unacked: VecDeque<u8>,
 }
@@ -100,7 +106,7 @@ impl flow {
         }
 
         let iss = 0;
-        let wnd = 1024;
+        let wnd = 64240; // same as the window size of cat
 
         let mut f = flow {
             quad: Quad {
@@ -226,7 +232,7 @@ impl flow {
             unread_data_at = 0;
         }
         self.incoming.extend(&data[unread_data_at..]);
-        self.debug_print_buffer();
+        //self.debug_print_buffer();
         self.recv.nxt = seqn
             .wrapping_add(data.len() as u32)
             .wrapping_add(if tcph.fin() { 1 } else { 0 });
@@ -248,12 +254,12 @@ impl flow {
     ///                   or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
     ///
     ///         let mut slen = data.len() as u32;
-    //         if tcph.fin() {
-    //             slen += 1;
-    //         };
-    //         if tcph.syn() {
-    //             slen += 1;
-    //         };
+    ///         if tcph.fin() {
+    ///             slen += 1;
+    ///         };
+    ///         if tcph.syn() {
+    ///             slen += 1;
+    ///         };
     pub fn segment_check(&mut self, slen: u32, seqn: u32) -> bool {
         let wend = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
         let okay = if slen == 0 {
@@ -334,7 +340,7 @@ impl flow {
         tcph: etherparse::TcpHeaderSlice,
         data: &[u8],
     ) -> io::Result<u64> {
-        debug!("Estab_handler called");
+        //debug!("Estab_handler called");
 
         let seqn = tcph.sequence_number();
         let ackn = tcph.acknowledgment_number();
@@ -409,6 +415,7 @@ impl flow {
             // must have ACKed our SYN, since we detected at least one acked byte,
             // and we have only sent one byte (the SYN).
             debug!("connection terminated!");
+            self.debug_print_buffer();
             self.state = State::Closed;
         } else {
             // TODO: <SEQ=SEG.ACK><CTL=RST>
@@ -423,132 +430,15 @@ impl flow {
         debug!("LastAck called");
     }
 
-    pub fn on_packet(
-        &mut self,
-        nic: &mut tun_tap::Iface,
-        iph: etherparse::Ipv4HeaderSlice,
-        tcph: etherparse::TcpHeaderSlice,
-        data: &[u8],
-    ) -> io::Result<u64> {
-        //   A new acknowledgment (called an "acceptable ack"), is one for which
-        //   the inequality below holds:
-        //   SND.UNA < SEG.ACK =< SND.NXT
-        let seqn = tcph.sequence_number();
-
-        // the virtual data len, counting syn or fin
-        let mut slen = data.len() as u32;
-        if tcph.fin() {
-            slen += 1;
-        };
-        if tcph.syn() {
-            slen += 1;
-        };
-
-        let wend = self.recv.nxt.wrapping_add(self.recv.wnd as u32);
-
-        ///Segment Receive  Test
-        ///     Length  Window
-        ///     ------- -------  -------------------------------------------
-        ///
-        ///        0       0     SEG.SEQ = RCV.NXT
-        ///
-        ///        0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-        ///
-        ///       >0       0     not acceptable
-        ///
-        ///       >0      >0     RCV.NXT =< SEG.SEQ < RCV.NXT+RCV.WND
-        ///                   or RCV.NXT =< SEG.SEQ+SEG.LEN-1 < RCV.NXT+RCV.WND
-        let okay = if slen == 0 {
-            // zero-length segment has separate rules for acceptance
-            if self.recv.wnd == 0 {
-                if seqn != self.recv.nxt {
-                    false
-                } else {
-                    true
-                }
-            } else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend) {
-                false
-            } else {
-                true
-            }
-        } else {
-            if self.recv.wnd == 0 {
-                false
-            } else if !is_between_wrapped(self.recv.nxt.wrapping_sub(1), seqn, wend)
-                && !is_between_wrapped(
-                    self.recv.nxt.wrapping_sub(1),
-                    seqn.wrapping_add(slen - 1),
-                    wend,
-                )
-            {
-                false
-            } else {
-                true
-            }
-        };
-
-        let ackn = tcph.acknowledgment_number();
-        // debug!(" the ack is {}", ackn);
-        // debug!(" the una is {}", self.send.una);
-        // debug!(" the nxt is {}", self.send.nxt);
-
-        // can be optimize
-        if let State::SynRcvd = self.state {
-            // ack== self.send.iss+1
-            if is_between_wrapped(
-                self.send.una.wrapping_sub(1),
-                ackn,
-                self.send.nxt.wrapping_add(1),
-            ) {
-                // must have ACKed our SYN, since we detected at least one acked byte,
-                // and we have only sent one byte (the SYN).
-                debug!("connection established!");
-                self.state = State::Estab;
-                return Ok(0 as u64);
-            } else {
-                // TODO: <SEQ=SEG.ACK><CTL=RST>
-                return Ok(0 as u64);
-            }
-        };
-
-        if let State::Estab | State::FinWait1 | State::FinWait2 = self.state {
-            let mut unread_data_at = (self.recv.nxt - seqn) as usize;
-            if unread_data_at > data.len() {
-                // ?
-                // we must have received a re-transmitted FIN that we have already seen
-                // nxt points to beyond the fin, but the fin is not in data!
-                assert_eq!(unread_data_at, data.len() + 1);
-                unread_data_at = 0;
-            }
-            self.incoming.extend(&data[unread_data_at..]);
-            let mut s = String::from("");
-            while (!self.incoming.is_empty()) {
-                s.push(self.incoming.pop_front().unwrap() as char);
-            }
-            info!("self.incoming {:?}", s);
-            /*
-            Once the TCP takes responsibility for the data it advances
-            RCV.NXT over the data accepted, and adjusts RCV.WND as
-            apporopriate to the current buffer availability.  The total of
-            RCV.NXT and RCV.WND should not be reduced.
-            */
-            self.recv.nxt = seqn
-                .wrapping_add(data.len() as u32)
-                .wrapping_add(if tcph.fin() { 1 } else { 0 });
-
-            // Send an acknowledgment of the form: <SEQ=SND.NXT><ACK=RCV.NXT><CTL=ACK>
-            // TODO: maybe just tick to piggyback ack on data?
-            self.write(nic, self.send.nxt, 0)?;
-        }
-
-        return Ok(0 as u64);
-    }
 
     pub fn debug_print_buffer(&mut self) {
         // print_data_in_the_buffer
-        let test = String::from_utf8(Vec::from(self.incoming.clone())).unwrap();
-
-        info!("data in the buffer (self.incoming) {:?}", test);
+        let temp_directory = env::temp_dir();
+        let temp_file = temp_directory.join("test.mp4");
+        let mut file = File::create(temp_file).unwrap();
+        file.write(Vec::from(self.incoming.clone()).as_ref())
+            .unwrap();
+        //info!("data in the buffer (self.incoming) {:?}", test);
     }
 }
 
