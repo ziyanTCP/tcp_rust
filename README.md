@@ -1,10 +1,11 @@
 
-# a Simple Example
-* To see a simple example of how the TCP works,   run the following command to start our tcp implementation   
-`bash run.sh`
+# Listening example
+* This example shows our TCP listening for a connection from 192.168.0.1 and receiving an mp4 file.   
+`bash run.sh`  
+`sudo tshark -i tun0 -f "tcp"`
 
-* start tshark to capture the packets  
-`sudo tshark -i tun0 -f "tcp" `
+# Building connection actively
+* this example shows out TCP actively connecting to 192.168.0.1:port_number and tearing down connection  
 
-* start the tcp clients provided by Python  
-`python test.py`
+`bash run2.sh`  
+`sudo tshark -i tun0 -f "tcp"`

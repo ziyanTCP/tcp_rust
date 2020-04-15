@@ -9,6 +9,7 @@ use std::io::Write;
 
 // for statistics
 use crate::nic;
+use std::alloc::dealloc;
 use std::time::{Duration, Instant};
 
 /// A Quad is a 4 tuple
@@ -22,6 +23,7 @@ pub struct Quad {
 pub enum State {
     //Listen,
     SynRcvd,
+    SynSent,
     Estab,
     FinWait1,
     FinWait2,
@@ -174,25 +176,17 @@ impl flow {
 
     pub fn active_three_way_handshake<'a>(
         nic: &mut nic::Interface, // why mutable?
-        iph: etherparse::Ipv4HeaderSlice<'a>,
-        tcph: etherparse::TcpHeaderSlice<'a>,
+        quad: &Quad,
     ) -> io::Result<Option<Self>> {
+        // debug!("active_three_way_handshake called");
         let buf = [0u8; 1500];
-        if !tcph.syn() {
-            // only expected SYN packet
-            return Ok(None);
-        }
 
         let iss = 0;
         let wnd = 64240; // same as the window size of cat
 
         let mut f = flow {
-            quad: Quad {
-                src: (iph.source_addr(), tcph.source_port()),
-                dst: (iph.destination_addr(), tcph.destination_port()),
-            },
-
-            state: State::SynRcvd,
+            quad: quad.clone(),
+            state: State::Closed,
             send: SendSequenceSpace {
                 una: iss,
                 nxt: iss,
@@ -203,40 +197,32 @@ impl flow {
                 iss: iss,
             },
             recv: RecvSequenceSpace {
-                irs: tcph.sequence_number(),
-                nxt: tcph.sequence_number() + 1,
-                wnd: tcph.window_size(),
+                irs: iss,
+                nxt: iss + 1,
+                wnd: 0,
                 up: false,
             },
             incoming: Default::default(),
             unacked: Default::default(),
-            tcp: etherparse::TcpHeader::new(tcph.destination_port(), tcph.source_port(), iss, wnd),
+            tcp: etherparse::TcpHeader::new(quad.dst.1, quad.src.1, iss, wnd),
             ip: etherparse::Ipv4Header::new(
                 0,
                 64,
                 etherparse::IpTrafficClass::Tcp,
-                [
-                    iph.destination()[0],
-                    iph.destination()[1],
-                    iph.destination()[2],
-                    iph.destination()[3],
-                ],
-                [
-                    iph.source()[0],
-                    iph.source()[1],
-                    iph.source()[2],
-                    iph.source()[3],
-                ],
+                quad.dst.0.octets(),
+                quad.src.0.octets(),
             ),
             stats: Statistics {
                 timer: Instant::now(),
                 size: 0,
             },
         };
+
         // need to start establishing a connection
         f.tcp.syn = true;
-        f.tcp.ack = true;
         f.write(nic, f.send.nxt, 0)?;
+        f.state = State::SynSent;
+        // debug!("here");
         Ok(Some(f))
     }
 
@@ -277,6 +263,7 @@ impl flow {
             .calc_checksum_ipv4(&self.ip, &[])
             .expect("failed to compute checksum");
         let mut tcp_header_buf = &mut buf[ip_header_ends_at..tcp_header_ends_at];
+        // debug!("{:?}", self.tcp);
         self.tcp.write(&mut tcp_header_buf);
         if self.tcp.syn {
             self.send.nxt = self.send.nxt.wrapping_add(1);
@@ -286,9 +273,9 @@ impl flow {
             self.send.nxt = self.send.nxt.wrapping_add(1);
             self.tcp.fin = false;
         }
-        //debug!("{:?}",&buf[..tcp_header_ends_at]);
-        nic.send(&buf[..tcp_header_ends_at])?;
-        Ok(0 as usize)
+        // debug!("{:?}", &buf[..tcp_header_ends_at]);
+        // debug!("{:?}", self.tcp);
+        nic.send(&buf[..tcp_header_ends_at])
     }
 
     /// State::Estab | State::FinWait1 | State::FinWait2
@@ -377,7 +364,7 @@ impl flow {
         tcph: etherparse::TcpHeaderSlice,
         data: &[u8],
     ) -> io::Result<u64> {
-        debug!("SynRcvd_handler called");
+        // debug!("SynRcvd_handler called");
 
         let seqn = tcph.sequence_number();
         let ackn = tcph.acknowledgment_number();
@@ -418,7 +405,7 @@ impl flow {
         tcph: etherparse::TcpHeaderSlice,
         data: &[u8],
     ) -> io::Result<u64> {
-        //debug!("Estab_handler called");
+        // debug!("Estab_handler called");
 
         let seqn = tcph.sequence_number();
         let ackn = tcph.acknowledgment_number();
@@ -431,7 +418,10 @@ impl flow {
             assert_eq!(unread_data_at, data.len() + 1);
             unread_data_at = 0;
         }
-        if let ok = self.segment_check((data.len() + 1) as u32, seqn) {
+        // debug!("{:?}", self.recv.nxt);
+        // debug!("{:?}", self.recv.wnd);
+        // debug!("{:?}", seqn);
+        if let ok = self.segment_check(data.len() as u32, seqn) {
             match (ok) {
                 true => {
                     self.data_from_segment(data, &tcph);
@@ -448,6 +438,7 @@ impl flow {
                     return Ok(0 as u64);
                 }
                 false => {
+                    debug!("not okay!!!");
                     return Ok(0 as u64);
                 }
             }
@@ -507,6 +498,54 @@ impl flow {
 
     pub fn Closed_handler(&mut self) {
         debug!("Closed_handler called");
+    }
+
+    pub fn SynSent_handler(
+        &mut self,
+        nic: &mut nic::Interface,
+        tcph: etherparse::TcpHeaderSlice,
+    ) -> io::Result<u64> {
+        // debug!("SynSent_handler called");
+
+        let seqn = tcph.sequence_number();
+        let ackn = tcph.acknowledgment_number();
+        self.recv.nxt = seqn;
+        // the segement length is 0
+        // debug!("{:?}", self.recv.nxt);
+        // debug!("{:?}", self.recv.wnd);
+        // debug!("{:?}", seqn);
+        let ok = self.segment_check(0 as u32, seqn);
+        if ok == false {
+            debug!("not okay");
+            return Ok(0 as u64);
+        }
+
+        // whether ack our previous SYN
+        if is_between_wrapped(
+            self.send.una.wrapping_sub(1),
+            ackn,
+            self.send.nxt.wrapping_add(1),
+        ) {
+            // must have ACKed our SYN, since we detected at least one acked byte,
+            // and we have only sent one byte (the SYN).
+            debug!("connection established!");
+            self.state = State::Estab;
+        } else {
+            // TODO: <SEQ=SEG.ACK><CTL=RST>
+            return Ok(0 as u64);
+        }
+        // need to ACK to complete the handshake
+        self.tcp.ack = true;
+        self.recv.nxt = seqn + 1;
+        self.write(nic, self.send.nxt, 0)?;
+
+        return Ok(0 as u64);
+        // self.data_from_segment(data, &tcph);
+        // no need to ack if there is no data
+        // if data.len() != 0 {
+        //     self.write(nic, self.send.nxt, 0)?;
+        // }
+        // return Ok(0 as u64);
     }
 
     pub fn debug_print_buffer(&mut self) {

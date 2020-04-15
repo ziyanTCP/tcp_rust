@@ -87,6 +87,9 @@ impl tcp {
                                     flow::State::Closed => {
                                         f.get_mut().Closed_handler();
                                     }
+                                    flow::State::SynSent => {
+                                        f.get_mut().SynSent_handler(&mut self.nic, tcph);
+                                    }
                                 }
                             }
                             Entry::Vacant(e) => {
@@ -126,23 +129,28 @@ impl tcp {
                 debug!("bind port number {}", port)
             }
             control_message::Connect(src_port, dst_ip, dst_port) => {
-                //     let q = flow::Quad {
-                //         src: (src, src_port),
-                //         dst: (dst_ip, dst_port),
-                //     };
-                //     // create a flow
-                //     if let Some(new_f) =
-                //         flow::flow::passive_three_way_handshake(nic, iph, tcph).unwrap()
-                //     {
-                //         e.insert(new_f);
-                //         return;
-                //     } else {
-                //     };
-                // }
-                // control_message::Read => unimplemented!(),
-                // control_message::Write => unimplemented!(),
+                let q = flow::Quad {
+                    dst: (self.nic.ip, src_port),
+                    src: (dst_ip, dst_port),
+                };
+                match self.flow_table.entry(q) {
+                    Entry::Occupied(mut f) => {
+                        debug!("already have the flow");
+                    }
+                    Entry::Vacant(e) => {
+                        // create a flow
+                        if let Some(new_f) =
+                            flow::flow::active_three_way_handshake(&mut self.nic, &q).unwrap()
+                        {
+                            e.insert(new_f);
+                            return;
+                        } else {
+                        };
+                    }
+                }
             }
-            _ => {}
+            control_message::Read => unimplemented!(),
+            control_message::Write => unimplemented!(),
         }
     }
 }
